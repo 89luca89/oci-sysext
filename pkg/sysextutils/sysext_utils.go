@@ -116,7 +116,7 @@ func CreateRootfs(image string, name string, osname string) error {
 
 	filePath := filepath.Join(sysextRootfsDIR, "/usr/lib/extension-release.d/", "extension-release."+name)
 
-	content := "ID=" + osname + "\nARCHITECTURE=x86-64"
+	content := "ID=_any\nARCHITECTURE=x86-64\nEXTENSION_RELOAD_MANAGER=1"
 
 	// Write the string to the file
 	err = os.WriteFile(filePath, []byte(content), 0644)
