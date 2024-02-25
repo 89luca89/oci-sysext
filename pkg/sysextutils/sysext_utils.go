@@ -43,7 +43,7 @@ func getID(name string) string {
 // This function will read the oci-image manifest and properly unpack the layers in the right order to generate
 // a valid rootfs.
 // Untarring process will follow the keep-id option if specified in order to ensure no permission problems.
-func CreateRootfs(image string, name string, osname string) error {
+func CreateRootfs(image string, name string, skip int) error {
 	logging.Log("preparing rootfs for new sysext %s", name)
 
 	sysextRootfsDIR := filepath.Join(SysextRootfsDir, getID(image))
@@ -84,6 +84,11 @@ func CreateRootfs(image string, name string, osname string) error {
 
 	for _, layer := range manifest.Layers {
 		layerDigest := strings.Split(layer.Digest.String(), ":")[1] + ".tar.gz"
+		if skip > 0 {
+			skip--
+			logging.Log("skipping layer %s", layerDigest)
+			continue
+		}
 
 		logging.Log("extracting layer %s in %s", layerDigest, sysextRootfsDIR)
 
@@ -116,7 +121,7 @@ func CreateRootfs(image string, name string, osname string) error {
 
 	filePath := filepath.Join(sysextRootfsDIR, "/usr/lib/extension-release.d/", "extension-release."+name)
 
-	content := "ID=_any\nARCHITECTURE=x86-64\nEXTENSION_RELOAD_MANAGER=1"
+	content := "ID=_any\nEXTENSION_RELOAD_MANAGER=1\n"
 
 	// Write the string to the file
 	err = os.WriteFile(filePath, []byte(content), 0644)
@@ -134,7 +139,7 @@ func CreateSysext(image string, name string, fs string, osname string) error {
 		return errors.New("Unsupported fs type")
 	}
 
-	err := CreateRootfs(image, name, osname)
+	err := CreateRootfs(image, name, skip)
 	if err != nil {
 		return err
 	}

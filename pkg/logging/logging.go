@@ -34,6 +34,7 @@ const (
 	errorString   = "[error] "
 	warningString = "[warn] "
 	debugString   = "[debug] "
+	infoString    = "[info] "
 )
 
 const (
@@ -210,7 +211,7 @@ func LogDebug(format string, v ...any) {
 
 // Log will create a plain log for input string.
 func Log(format string, v ...any) {
-	fmt.Fprintf(os.Stderr, format+"\n", v...)
+	filteredLog(err, green+infoString+reset+format, v...)
 }
 
 // print logs only if level is <= than the globally set level.

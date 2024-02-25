@@ -5,8 +5,10 @@ import (
 	"crypto/sha256"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"syscall"
 
 	"github.com/89luca89/oci-sysext/pkg/logging"
@@ -146,4 +148,28 @@ func UntarFile(path string, target string) error {
 	}
 
 	return nil
+}
+
+// DiscUsageMegaBytes returns disk usage for input path in MB (rounded).
+func DiscUsageMegaBytes(path string) (string, error) {
+	var discUsage int64
+
+	readSize := func(path string, file os.FileInfo, err error) error {
+		if !file.IsDir() {
+			discUsage += file.Size()
+		}
+
+		return nil
+	}
+
+	err := filepath.Walk(path, readSize)
+	if err != nil {
+		logging.LogError("%v", err)
+
+		return "", err
+	}
+
+	size := math.Round(float64(discUsage)/1024/1024) + 32
+
+	return fmt.Sprintf("%.0fM", size), nil
 }

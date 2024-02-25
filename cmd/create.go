@@ -25,8 +25,8 @@ func NewCreateCommand() *cobra.Command {
 	createCommand.Flags().Bool("help", false, "show help")
 	createCommand.Flags().String("image", "", "OCI image to use")
 	createCommand.Flags().String("name", "", "name of sysext")
-	createCommand.Flags().String("fs", "squashfs", "fs to use for raw image")
-	createCommand.Flags().String("os", "", "os the sysext is destined for")
+	createCommand.Flags().String("fs", "ext4", "fs to use for raw image")
+	createCommand.Flags().Int("skip-layers", 1, "the first X layers to skip")
 	return createCommand
 }
 
@@ -46,14 +46,14 @@ func create(cmd *cobra.Command, arguments []string) error {
 		return err
 	}
 
-	os, err := cmd.Flags().GetString("os")
+	skip, err := cmd.Flags().GetInt("skip-layers")
 	if err != nil {
 		return err
 	}
 
-	if image == "" || name == "" || os == "" {
+	if image == "" || name == "" {
 		return errors.New("Missing arguments")
 	}
 
-	return sysextutils.CreateSysext(image, name, fs, os)
+	return sysextutils.CreateSysext(image, name, fs, skip)
 }
