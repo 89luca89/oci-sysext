@@ -134,8 +134,8 @@ func CreateRootfs(image string, name string, skip int) error {
 	return nil
 }
 
-func CreateSysext(image string, name string, fs string, osname string) error {
-	if fs != "squashfs" && fs != "btrfs" {
+func CreateSysext(image string, name string, fs string, skip int) error {
+	if fs != "squashfs" && fs != "btrfs" && fs != "ext4" {
 		return errors.New("Unsupported fs type")
 	}
 
@@ -172,6 +172,42 @@ func CreateSysext(image string, name string, fs string, osname string) error {
 			sysextRootfsDIR,
 			filepath.Join(SysextDir, name+".raw"),
 		}...)
+	} else if fs == "ext4" {
+		size, err := fileutils.DiscUsageMegaBytes(sysextRootfsDIR)
+		if err != nil {
+			return err
+		}
+
+		logging.Log("creating image of size %s", size)
+		out, err := exec.Command("truncate", []string{
+			"-s", size, filepath.Join(SysextDir, name+".raw"),
+		}...).CombinedOutput()
+		if err != nil {
+			logging.LogError(string(out))
+			return err
+		}
+
+		logging.Log("mkfs.ext4")
+		out, err = exec.Command("mkfs.ext4", []string{
+			"-E",
+			"root_owner=0:0",
+			"-d",
+			sysextRootfsDIR,
+			filepath.Join(SysextDir, name+".raw"),
+		}...).CombinedOutput()
+		if err != nil {
+			logging.LogError(string(out))
+			return err
+		}
+
+		logging.Log("resize2fs")
+		out, err = exec.Command("resize2fs", []string{"-M", filepath.Join(SysextDir, name+".raw")}...).CombinedOutput()
+		if err != nil {
+			logging.LogError(string(out))
+			return err
+		}
+
+		return nil
 	} else {
 		return errors.New("Unsupported fs type")
 	}
