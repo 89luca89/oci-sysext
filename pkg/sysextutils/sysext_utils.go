@@ -38,19 +38,64 @@ func getID(name string) string {
 	return fmt.Sprintf("%x", hasher.Sum(nil))
 }
 
-// CreateRootfs will generate a chrootable rootfs from input oci image reference, with input name and config.
+func cleanRootfs(image, name string) error {
+	sysextRootfsDIR := filepath.Join(SysextRootfsDir, getID(image))
+	return os.RemoveAll(sysextRootfsDIR)
+}
+
+func calcSkipLayers(image, imageSource string) (int, error) {
+	logging.Log("reading %s's manifest", image)
+	imageDir := imageutils.GetPath(image)
+	// get manifest
+	manifestFile, err := fileutils.ReadFile(filepath.Join(imageDir, "manifest.json"))
+	if err != nil {
+		return 0, err
+	}
+
+	sourceImageDir := imageutils.GetPath(imageSource)
+	logging.Log("reading %s's manifest", imageSource)
+	// get manifest
+	sourceManifestFile, err := fileutils.ReadFile(filepath.Join(sourceImageDir, "manifest.json"))
+	if err != nil {
+		return 0, err
+	}
+
+	var manifest v1.Manifest
+	var sourceManifest v1.Manifest
+
+	logging.Log("parsing %s's manifest", image)
+	err = json.Unmarshal(manifestFile, &manifest)
+	if err != nil {
+		return 0, err
+	}
+
+	logging.Log("parsing %s's manifest", imageSource)
+	err = json.Unmarshal(sourceManifestFile, &sourceManifest)
+	if err != nil {
+		return 0, err
+	}
+
+	return len(manifest.Layers) - len(sourceManifest.Layers), nil
+}
+
+// createRootfs will generate a chrootable rootfs from input oci image reference, with input name and config.
 // If input image is not found it will be automatically pulled.
 // This function will read the oci-image manifest and properly unpack the layers in the right order to generate
 // a valid rootfs.
 // Untarring process will follow the keep-id option if specified in order to ensure no permission problems.
-func CreateRootfs(image string, name string, skip int) error {
+func createRootfs(image string, name string, imageSource string) error {
 	logging.Log("preparing rootfs for new sysext %s", name)
+
+	skip, err := calcSkipLayers(image, imageSource)
+	if err != nil {
+		return err
+	}
 
 	sysextRootfsDIR := filepath.Join(SysextRootfsDir, getID(image))
 
 	logging.Log("creating %s", sysextRootfsDIR)
 
-	err := os.MkdirAll(sysextRootfsDIR, os.ModePerm)
+	err = os.MkdirAll(sysextRootfsDIR, os.ModePerm)
 	if err != nil {
 		return err
 	}
@@ -58,12 +103,6 @@ func CreateRootfs(image string, name string, skip int) error {
 	logging.Log("looking up image %s", image)
 
 	imageDir := imageutils.GetPath(image)
-	if !fileutils.Exist(imageDir) {
-		_, err := imageutils.Pull(image, false)
-		if err != nil {
-			return err
-		}
-	}
 
 	logging.Log("reading %s's manifest", image)
 
@@ -80,7 +119,11 @@ func CreateRootfs(image string, name string, skip int) error {
 		return err
 	}
 
-	logging.Log("extracting image's layers")
+	logging.Log("extracting image's layers, skipping %d layers...", skip)
+
+	if skip <= 0 || skip >= len(manifest.Layers) {
+		return errors.New("Source image is not correct")
+	}
 
 	for _, layer := range manifest.Layers {
 		layerDigest := strings.Split(layer.Digest.String(), ":")[1] + ".tar.gz"
@@ -134,12 +177,27 @@ func CreateRootfs(image string, name string, skip int) error {
 	return nil
 }
 
-func CreateSysext(image string, name string, fs string, skip int) error {
+func CreateSysext(image string, name string, fs string, imageSource string) error {
 	if fs != "squashfs" && fs != "btrfs" && fs != "ext4" {
 		return errors.New("Unsupported fs type")
 	}
 
-	err := CreateRootfs(image, name, skip)
+	logging.Log("cleaning up rootfs dir...")
+	err := cleanRootfs(image, name)
+	if err != nil {
+		return err
+	}
+
+	logging.Log("ensuring image %s ...", imageSource)
+	sourceImageDir := imageutils.GetPath(imageSource)
+	if !fileutils.Exist(sourceImageDir) {
+		_, err := imageutils.Pull(imageSource, false)
+		if err != nil {
+			return err
+		}
+	}
+
+	err = createRootfs(image, name, imageSource)
 	if err != nil {
 		return err
 	}
