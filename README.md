@@ -1,6 +1,5 @@
 # OCI-SYSEXT
 
-
 This tool aims to  be a little bridge to transform an OCI image into a systemd-sysext compatible raw image.
 
 ## Compile
