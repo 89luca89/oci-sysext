@@ -9,12 +9,10 @@ This tool aims to  be a little bridge to transform an OCI image into a systemd-s
 ## Usage
 
 ```sh
-./oci-sysext pull docker.io/alpine:latest
- ./oci-sysext create --image docker.io/alpine:latest --name my-alpine-raw --fs btrfs --os opensuse-microos
+./oci-sysext pull cgr.dev/chainguard/wolfi-base
+ ./oci-sysext create --image cgr.dev/chainguard/wolfi-base --name wolfi-zero-cve-userspace --fs btrfs --image-source <optional-to-diff-against>
 ```
 
 ### Usage notes
 
 - Supported `--fs` are `squashfs` and `btrfs` 
-
-- `--os` flag is the `/etc/os-release` content of `ID=`, this is because systemd-sysext needs to know what systemd this will run on
