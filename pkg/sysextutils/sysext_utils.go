@@ -180,7 +180,8 @@ func patchBinary(path, newRootPath string) error {
 	}
 
 	// Set the new interpreter path
-	newInterpreterPath := filepath.Join(newRootPath, "lib64", "ld-linux-x86-64.so.2")
+	// newInterpreterPath := filepath.Join(newRootPath, "lib64", "ld-linux-x86-64.so.2") // doesn't work
+	newInterpreterPath := "/lib64/ld-linux-x86-64.so.2" // works
 	cmd := exec.Command("patchelf", "--set-interpreter", newInterpreterPath, path)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
