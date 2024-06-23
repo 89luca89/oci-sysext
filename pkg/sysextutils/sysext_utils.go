@@ -41,38 +41,49 @@ func getID(name string) string {
 	return fmt.Sprintf("%x", hasher.Sum(nil))
 }
 
-// Manually doing it currently need to test.
+// May be naive. Forgive me :)
 
-// func adjustSymlinks(rootfsDir string) error {
-// 	return filepath.Walk(rootfsDir, func(path string, info os.FileInfo, err error) error {
-// 		if err != nil {
-// 			return err
-// 		}
-// 		if info.Mode()&os.ModeSymlink != 0 {
-// 			target, err := os.Readlink(path)
-// 			if err != nil {
-// 				logging.LogError("Failed to read symlink: %s, error: %v", path, err)
-// 				return err
-// 			}
-// 			// Check if the symlink is absolute and points to the old root
-// 			if filepath.IsAbs(target) && strings.HasPrefix(target, "/root/.local/share/oci-sysext/sysexts-rootfs/") {
-// 				newTarget := filepath.Join(rootfsDir, strings.TrimPrefix(target, "/root/.local/share/oci-sysext/sysexts-rootfs/"))
-// 				err = os.Remove(path)
-// 				if err != nil {
-// 					logging.LogError("Failed to remove old symlink: %s, error: %v", path, err)
-// 					return err
-// 				}
-// 				err = os.Symlink(newTarget, path)
-// 				if err != nil {
-// 					logging.LogError("Failed to create new symlink: %s -> %s, error: %v", path, newTarget, err)
-// 					return err
-// 				}
-// 				logging.Log("Updated symlink: %s -> %s", path, newTarget)
-// 			}
-// 		}
-// 		return nil
-// 	})
-// }
+func adjustSymlinks(rootfsDir string) error {
+	return filepath.Walk(rootfsDir, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			target, err := os.Readlink(path)
+			if err != nil {
+				logging.LogError("Failed to read symlink: %s, error: %v", path, err)
+				return err
+			}
+			if filepath.IsAbs(target) {
+				newTarget := filepath.Join(rootfsDir, strings.TrimPrefix(target, "/"))
+				if err := os.Remove(path); err != nil {
+					logging.LogError("Failed to remove old symlink: %s, error: %v", path, err)
+					return err
+				}
+				if err := os.Symlink(newTarget, path); err != nil {
+					logging.LogError("Failed to create new symlink: %s -> %s, error: %v", path, newTarget, err)
+					return err
+				}
+				logging.Log("Updated symlink: %s -> %s", path, newTarget)
+			} else {
+				relativeTarget := filepath.Join(filepath.Dir(path), target)
+				if _, err := os.Stat(relativeTarget); os.IsNotExist(err) {
+					newTarget := filepath.Join(rootfsDir, target)
+					if err := os.Remove(path); err != nil {
+						logging.LogError("Failed to remove old symlink: %s, error: %v", path, err)
+						return err
+					}
+					if err := os.Symlink(newTarget, path); err != nil {
+						logging.LogError("Failed to create new symlink: %s -> %s, error: %v", path, newTarget, err)
+						return err
+					}
+					logging.Log("Updated relative symlink: %s -> %s", path, newTarget)
+				}
+			}
+		}
+		return nil
+	})
+}
 
 // isStaticallyLinked determines if the specified binary is statically linked.
 func isStaticallyLinked(path string) bool {
@@ -379,13 +390,13 @@ func createRootfs(image string, name string, imageSource string) error {
 	logging.Log("Binaries relocated and patched successfully")
 
 	// Call adjustSymlinks here to correct any symlinks after patching
-	// err = adjustSymlinks(sysextRootfsDIR)
-	// if err != nil {
-	// 	logging.LogError("Failed to adjust symlinks: %v", err)
-	// 	return err
-	// }
+	err = adjustSymlinks(sysextRootfsDIR)
+	if err != nil {
+		logging.LogError("Failed to adjust symlinks: %v", err)
+		return err
+	}
 
-	// logging.Log("Symlinks adjusted successfully")
+	logging.Log("Symlinks adjusted successfully")
 
 	dirs, err := os.ReadDir(sysextRootfsDIR)
 	if err != nil {
