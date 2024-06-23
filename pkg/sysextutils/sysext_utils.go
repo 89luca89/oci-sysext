@@ -255,16 +255,26 @@ func parseLddOutput(output string) []string {
 	return libraries
 }
 
-// copyFile copies a file from src to dst
+// copyFile copies a file from src to dst and preserves file permissions
 func copyFile(src, dst string) error {
+	// Read the source file
 	input, err := ioutil.ReadFile(src)
 	if err != nil {
 		return err
 	}
-	err = ioutil.WriteFile(dst, input, 0644)
+
+	// Get the file mode (permissions) of the source file
+	srcInfo, err := os.Stat(src)
 	if err != nil {
 		return err
 	}
+
+	// Write the file to the destination with the same permissions
+	err = ioutil.WriteFile(dst, input, srcInfo.Mode())
+	if err != nil {
+		return err
+	}
+
 	return nil
 }
 
