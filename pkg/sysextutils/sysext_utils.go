@@ -390,6 +390,16 @@ func createRootfs(image string, name string, imageSource string) error {
 
 	logging.Log("All layers extracted successfully")
 
+	// Adjust symlinks before patching binaries
+	logging.Log("Adjusting symlinks in %s", sysextRootfsDIR)
+	err = adjustSymlinks(sysextRootfsDIR)
+	if err != nil {
+		logging.LogError("Failed to adjust symlinks: %v", err)
+		return err
+	}
+
+	logging.Log("Symlinks adjusted successfully")
+
 	// Assuming newRootPath is the same as sysextRootfsDIR for this example
 	newRootPath := sysextRootfsDIR
 	err = relocateAndPatchBinaries(sysextRootfsDIR, newRootPath)
@@ -399,15 +409,6 @@ func createRootfs(image string, name string, imageSource string) error {
 	}
 
 	logging.Log("Binaries relocated and patched successfully")
-
-	// Call adjustSymlinks here to correct any symlinks after patching
-	err = adjustSymlinks(sysextRootfsDIR)
-	if err != nil {
-		logging.LogError("Failed to adjust symlinks: %v", err)
-		return err
-	}
-
-	logging.Log("Symlinks adjusted successfully")
 
 	dirs, err := os.ReadDir(sysextRootfsDIR)
 	if err != nil {
