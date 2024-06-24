@@ -180,11 +180,12 @@ func patchBinary(path, newRootPath string) error {
 	}
 
 	// Set the new interpreter path
-	// newInterpreterPath := filepath.Join(newRootPath, "lib64", "ld-linux-x86-64.so.2") // doesn't work
-	newInterpreterPath := "/lib64/ld-linux-x86-64.so.2" // works
+	newInterpreterPath := filepath.Join(newRootPath, "lib64", "ld-linux-x86-64.so.2") // doesn't work
+	// newInterpreterPath := "/lib64/ld-linux-x86-64.so.2" // works
 	cmd := exec.Command("patchelf", "--set-interpreter", newInterpreterPath, path)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
+	logCommand(cmd) // Log the command to file
 	if err := cmd.Run(); err != nil {
 		logging.LogError("Failed to patch interpreter for binary %s: %s", path, stderr.String())
 		return err
@@ -194,6 +195,7 @@ func patchBinary(path, newRootPath string) error {
 	newRPath := filepath.Join(newRootPath, "lib")
 	cmd = exec.Command("patchelf", "--set-rpath", newRPath, path)
 	cmd.Stderr = &stderr
+	logCommand(cmd) // Log the command to file
 	if err := cmd.Run(); err != nil {
 		logging.LogError("Failed to set RPATH for binary %s: %s", path, stderr.String())
 		return err
@@ -234,6 +236,7 @@ func patchDependencies(path, newRootPath string) error {
 		cmd = exec.Command("patchelf", "--set-rpath", newLibPath, newLibFullPath)
 		var stderr bytes.Buffer
 		cmd.Stderr = &stderr
+		logCommand(cmd) // Log the command to file
 		if err := cmd.Run(); err != nil {
 			logging.LogError("Failed to set RPATH for library %s: %s", newLibFullPath, stderr.String())
 			return err
@@ -241,6 +244,20 @@ func patchDependencies(path, newRootPath string) error {
 	}
 
 	return nil
+}
+
+// logCommand logs the command to a file
+func logCommand(cmd *exec.Cmd) {
+	f, err := os.OpenFile("logs.txt", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		logging.LogError("Failed to open log file: %v", err)
+		return
+	}
+	defer f.Close()
+
+	if _, err := f.WriteString(cmd.String() + "\n"); err != nil {
+		logging.LogError("Failed to write to log file: %v", err)
+	}
 }
 
 // parseLddOutput parses the output from ldd to extract library names
