@@ -41,6 +41,11 @@ func getID(name string) string {
 	return fmt.Sprintf("%x", hasher.Sum(nil))
 }
 
+// adjustSymlinks adjusts the symlinks in the specified rootfs directory.
+// It walks through the directory tree rooted at rootfsDir and updates any symlinks found.
+// If a symlink points to an absolute path, it is adjusted to be relative to the rootfsDir.
+// If a symlink points to a relative path that does not exist, it is adjusted to be relative to the rootfsDir.
+// The function returns an error if any operation fails.
 // May be naive. Forgive me :)
 
 func adjustSymlinks(rootfsDir string) error {
@@ -85,7 +90,6 @@ func adjustSymlinks(rootfsDir string) error {
 	})
 }
 
-// isStaticallyLinked determines if the specified binary is statically linked.
 func isStaticallyLinked(path string) bool {
 	f, err := elf.Open(path)
 	if err != nil {
@@ -155,7 +159,7 @@ func relocateAndPatchBinaries(rootfsDir, newRootPath string) error {
 	return nil
 }
 
-// isELFExecutable checks if the file is an ELF executable
+// isELFExecutable checks if the file is an ELF executable by using the elf utility to check the file type
 func isELFExecutable(path string) bool {
 	f, err := os.Open(path)
 	if err != nil {
@@ -171,7 +175,7 @@ func isELFExecutable(path string) bool {
 	return elfFile.Type == elf.ET_EXEC || elfFile.Type == elf.ET_DYN
 }
 
-// patchBinary patches the binary's interpreter and library paths
+// patchBinary patches the binary's interpreter and library paths - https://manpages.ubuntu.com/manpages/focal/man1/patchelf.1.html
 func patchBinary(path, newRootPath string) error {
 	// Check if the binary is statically linked; if so, skip patching
 	if isStaticallyLinked(path) {
@@ -181,8 +185,8 @@ func patchBinary(path, newRootPath string) error {
 
 	// Set the new interpreter path
 	// newInterpreterPath := filepath.Join(newRootPath, "lib64", "ld-linux-x86-64.so.2") // doesn't work
-	newInterpreterPath := "/lib64/ld-linux-x86-64.so.2" // works
-	cmd := exec.Command("patchelf", "--set-interpreter", newInterpreterPath, path)
+	newInterpreterPath := "/lib64/ld-linux-x86-64.so.2"                            // works
+	cmd := exec.Command("patchelf", "--set-interpreter", newInterpreterPath, path) // TODO(Krish) add error handling
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	logCommand(cmd) // Log the command to file
