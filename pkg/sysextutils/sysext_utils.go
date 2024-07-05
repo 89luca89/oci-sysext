@@ -3,11 +3,14 @@
 package sysextutils
 
 import (
+	"bytes"
 	"crypto/md5"
+	"debug/elf"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"io/ioutil"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -36,6 +39,265 @@ func getID(name string) string {
 	}
 
 	return fmt.Sprintf("%x", hasher.Sum(nil))
+}
+
+// adjustSymlinks adjusts the symlinks in the specified rootfs directory.
+// It walks through the directory tree rooted at rootfsDir and updates any symlinks found.
+// If a symlink points to an absolute path, it is adjusted to be relative to the rootfsDir.
+// If a symlink points to a relative path that does not exist, it is adjusted to be relative to the rootfsDir.
+// The function returns an error if any operation fails.
+// May be naive. Forgive me :)
+
+func adjustSymlinks(rootfsDir string) error {
+	return filepath.Walk(rootfsDir, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			target, err := os.Readlink(path)
+			if err != nil {
+				logging.LogError("Failed to read symlink: %s, error: %v", path, err)
+				return err
+			}
+			if filepath.IsAbs(target) {
+				newTarget := filepath.Join(rootfsDir, strings.TrimPrefix(target, "/"))
+				if err := os.Remove(path); err != nil {
+					logging.LogError("Failed to remove old symlink: %s, error: %v", path, err)
+					return err
+				}
+				if err := os.Symlink(newTarget, path); err != nil {
+					logging.LogError("Failed to create new symlink: %s -> %s, error: %v", path, newTarget, err)
+					return err
+				}
+				logging.Log("Updated symlink: %s -> %s", path, newTarget)
+			} else {
+				relativeTarget := filepath.Join(filepath.Dir(path), target)
+				if _, err := os.Stat(relativeTarget); os.IsNotExist(err) {
+					newTarget := filepath.Join(rootfsDir, target)
+					if err := os.Remove(path); err != nil {
+						logging.LogError("Failed to remove old symlink: %s, error: %v", path, err)
+						return err
+					}
+					if err := os.Symlink(newTarget, path); err != nil {
+						logging.LogError("Failed to create new symlink: %s -> %s, error: %v", path, newTarget, err)
+						return err
+					}
+					logging.Log("Updated relative symlink: %s -> %s", path, newTarget)
+				}
+			}
+		}
+		return nil
+	})
+}
+
+func isStaticallyLinked(path string) bool {
+	f, err := elf.Open(path)
+	if err != nil {
+		logging.LogError("Failed to open file %s: %v", path, err)
+		return false // Assume not statically linked if unable to open
+	}
+	defer f.Close()
+
+	// Check if the INTERP section is present
+	section := f.Section(".interp")
+	if section == nil {
+		// No .interp section means it's likely a statically linked binary
+		return true
+	}
+
+	// Attempt to read data from the section to further verify
+	data, err := section.Data()
+	if err != nil {
+		logging.LogError("Failed to read .interp section data: %v", err)
+		return true // Assume statically linked if data cannot be read
+	}
+
+	// If the .interp section is empty, it's also considered statically linked
+	if len(data) == 0 {
+		return true
+	}
+
+	return false // .interp section is present and has data
+}
+
+func relocateAndPatchBinaries(rootfsDir, newRootPath string) error {
+	logging.Log("Starting to relocate and patch binaries in %s", rootfsDir)
+
+	err := filepath.Walk(rootfsDir, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			logging.LogError("Error accessing path %s: %v", path, err)
+			return err
+		}
+
+		if !info.IsDir() && isELFExecutable(path) {
+			if isStaticallyLinked(path) {
+				logging.Log("Skipping patching for statically linked binary: %s", path)
+				return nil
+			}
+
+			// Existing code for patching
+			logging.Log("Patching binary: %s", path)
+			if err := patchBinary(path, newRootPath); err != nil {
+				logging.LogError("Failed to patch binary %s: %v", path, err)
+				return err
+			}
+
+			if err := patchDependencies(path, newRootPath); err != nil {
+				logging.LogError("Failed to patch dependencies for %s: %v", path, err)
+				return err
+			}
+		}
+		return nil
+	})
+
+	if err != nil {
+		logging.LogError("Failed during the walking process in %s: %v", rootfsDir, err)
+		return err
+	}
+
+	logging.Log("Successfully relocated and patched all binaries in %s", rootfsDir)
+	return nil
+}
+
+// isELFExecutable checks if the file is an ELF executable by using the elf utility to check the file type
+func isELFExecutable(path string) bool {
+	f, err := os.Open(path)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+
+	elfFile, err := elf.NewFile(f)
+	if err != nil {
+		return false
+	}
+
+	return elfFile.Type == elf.ET_EXEC || elfFile.Type == elf.ET_DYN
+}
+
+// patchBinary patches the binary's interpreter and library paths - https://manpages.ubuntu.com/manpages/focal/man1/patchelf.1.html
+func patchBinary(path, newRootPath string) error {
+	// Check if the binary is statically linked; if so, skip patching
+	if isStaticallyLinked(path) {
+		logging.Log("Skipping interpreter patching for statically linked binary: %s", path)
+		return nil
+	}
+
+	// Set the new interpreter path
+	// newInterpreterPath := filepath.Join(newRootPath, "lib64", "ld-linux-x86-64.so.2") // doesn't work
+	newInterpreterPath := "/lib64/ld-linux-x86-64.so.2"                            // works
+	cmd := exec.Command("patchelf", "--set-interpreter", newInterpreterPath, path) // TODO(Krish) add error handling
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	logCommand(cmd) // Log the command to file
+	if err := cmd.Run(); err != nil {
+		logging.LogError("Failed to patch interpreter for binary %s: %s", path, stderr.String())
+		return err
+	}
+
+	// Set RPATH to ensure the binary finds the necessary libraries at the new location
+	newRPath := filepath.Join(newRootPath, "lib")
+	cmd = exec.Command("patchelf", "--set-rpath", newRPath, path)
+	cmd.Stderr = &stderr
+	logCommand(cmd) // Log the command to file
+	if err := cmd.Run(); err != nil {
+		logging.LogError("Failed to set RPATH for binary %s: %s", path, stderr.String())
+		return err
+	}
+
+	logging.Log("Successfully patched binary %s", path)
+	return nil
+}
+
+// patchDependencies updates the RPATH to include additional library paths and copies dependencies
+func patchDependencies(path, newRootPath string) error {
+	// Use ldd to find dependencies
+	cmd := exec.Command("ldd", path)
+	output, err := cmd.Output()
+	if err != nil {
+		logging.LogError("Failed to run ldd on %s: %v", path, err)
+		return err
+	}
+
+	// Parse output to find needed libraries
+	libraries := parseLddOutput(string(output))
+	newLibPath := filepath.Join(newRootPath, "lib")
+
+	for _, lib := range libraries {
+		libName := filepath.Base(lib)
+		newLibFullPath := filepath.Join(newLibPath, libName)
+		logging.Log("Checking library: %s at path: %s", libName, newLibFullPath)
+
+		if _, err := os.Stat(newLibFullPath); os.IsNotExist(err) {
+			logging.Log("Library not found, copying: %s to %s", lib, newLibFullPath)
+			if err := copyFile(lib, newLibFullPath); err != nil {
+				logging.LogError("Failed to copy library %s to %s: %v", lib, newLibFullPath, err)
+				return err
+			}
+		}
+
+		// Update RPATH of the copied library
+		cmd = exec.Command("patchelf", "--set-rpath", newLibPath, newLibFullPath)
+		var stderr bytes.Buffer
+		cmd.Stderr = &stderr
+		logCommand(cmd) // Log the command to file
+		if err := cmd.Run(); err != nil {
+			logging.LogError("Failed to set RPATH for library %s: %s", newLibFullPath, stderr.String())
+			return err
+		}
+	}
+
+	return nil
+}
+
+// logCommand logs the command to a file
+func logCommand(cmd *exec.Cmd) {
+	f, err := os.OpenFile("logs.txt", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		logging.LogError("Failed to open log file: %v", err)
+		return
+	}
+	defer f.Close()
+
+	if _, err := f.WriteString(cmd.String() + "\n"); err != nil {
+		logging.LogError("Failed to write to log file: %v", err)
+	}
+}
+
+// parseLddOutput parses the output from ldd to extract library names
+func parseLddOutput(output string) []string {
+	var libraries []string
+	lines := strings.Split(output, "\n")
+	for _, line := range lines {
+		parts := strings.Fields(line)
+		if len(parts) > 2 && strings.Contains(parts[1], "=>") && parts[2] != "not" {
+			libraries = append(libraries, parts[2])
+		}
+	}
+	return libraries
+}
+
+// copyFile copies a file from src to dst and preserves file permissions
+func copyFile(src, dst string) error {
+	// Read the source file
+	input, err := ioutil.ReadFile(src)
+	if err != nil {
+		return err
+	}
+
+	// Get the file mode (permissions) of the source file
+	srcInfo, err := os.Stat(src)
+	if err != nil {
+		return err
+	}
+
+	// Write the file to the destination with the same permissions
+	err = ioutil.WriteFile(dst, input, srcInfo.Mode())
+	if err != nil {
+		return err
+	}
+
+	return nil
 }
 
 func cleanRootfs(image, name string) error {
@@ -87,69 +349,104 @@ func calcSkipLayers(image, imageSource string) (int, error) {
 // a valid rootfs.
 // Untarring process will follow the keep-id option if specified in order to ensure no permission problems.
 func createRootfs(image string, name string, imageSource string) error {
-	logging.Log("preparing rootfs for new sysext %s", name)
+	logging.Log("Starting rootfs creation for image: %s", image)
 
 	skip, err := calcSkipLayers(image, imageSource)
 	if err != nil {
+		logging.LogError("Failed to calculate skip layers: %v", err)
 		return err
 	}
+	logging.Log("Calculated skip layers: %d", skip)
 
 	sysextRootfsDIR := filepath.Join(SysextRootfsDir, getID(image))
-	logging.Log("creating %s", sysextRootfsDIR)
+	logging.Log("Creating directory: %s", sysextRootfsDIR)
 
 	err = os.MkdirAll(sysextRootfsDIR, os.ModePerm)
 	if err != nil {
+		logging.LogError("Failed to create directory: %v", err)
 		return err
 	}
 
-	logging.Log("looking up image %s", image)
+	logging.Log("Directory created successfully: %s", sysextRootfsDIR)
+
+	logging.Log("Looking up image %s", image)
 	imageDir := imageutils.GetPath(image)
-	logging.Log("reading %s's manifest", image)
+	logging.Log("Reading manifest from %s", imageDir)
+
 	manifestFile, err := fileutils.ReadFile(filepath.Join(imageDir, "manifest.json"))
 	if err != nil {
+		logging.LogError("Failed to read manifest file: %v", err)
 		return err
 	}
 
 	var manifest v1.Manifest
 	err = json.Unmarshal(manifestFile, &manifest)
 	if err != nil {
+		logging.LogError("Failed to unmarshal manifest file: %v", err)
 		return err
 	}
 
-	logging.Log("extracting image's layers, skipping %d layers...", skip)
+	logging.Log("Manifest unmarshalled successfully, extracting layers...")
+
 	if skip < 0 || skip > len(manifest.Layers) {
-		return errors.New("Invalid number of layers to skip")
+		logging.LogError("Invalid number of layers to skip: %d", skip)
+		return errors.New("invalid number of layers to skip")
 	}
 
 	for i, layer := range manifest.Layers {
 		if i < skip {
-			logging.Log("skipping layer %s", layer.Digest)
+			logging.Log("Skipping layer %s", layer.Digest)
 			continue
 		}
 
 		layerDigest := strings.Split(layer.Digest.String(), ":")[1] + ".tar.gz"
-		logging.Log("extracting layer %s in %s", layerDigest, sysextRootfsDIR)
+		logging.Log("Extracting layer %s in %s", layerDigest, sysextRootfsDIR)
 
 		err = fileutils.UntarFile(filepath.Join(imageDir, layerDigest), sysextRootfsDIR)
 		if err != nil {
+			logging.LogError("Failed to extract layer %s: %v", layerDigest, err)
 			return err
 		}
 	}
 
+	logging.Log("All layers extracted successfully")
+
+	// Adjust symlinks before patching binaries
+	logging.Log("Adjusting symlinks in %s", sysextRootfsDIR)
+	err = adjustSymlinks(sysextRootfsDIR)
+	if err != nil {
+		logging.LogError("Failed to adjust symlinks: %v", err)
+		return err
+	}
+
+	logging.Log("Symlinks adjusted successfully")
+
+	// Assuming newRootPath is the same as sysextRootfsDIR for this example
+	newRootPath := sysextRootfsDIR
+	err = relocateAndPatchBinaries(sysextRootfsDIR, newRootPath)
+	if err != nil {
+		logging.LogError("Failed to relocate and patch binaries: %v", err)
+		return err
+	}
+
+	logging.Log("Binaries relocated and patched successfully")
+
 	dirs, err := os.ReadDir(sysextRootfsDIR)
 	if err != nil {
+		logging.LogError("Failed to read directory: %v", err)
 		return err
 	}
 
 	for _, dir := range dirs {
 		if dir.Name() != "usr" && dir.Name() != "opt" {
-			logging.Log("removing unneeded dir: %s", dir.Name())
+			logging.Log("Removing unneeded dir: %s", dir.Name())
 			// os.RemoveAll(filepath.Join(sysextRootfsDIR, dir.Name()))
 		}
 	}
 
 	err = os.MkdirAll(filepath.Join(sysextRootfsDIR, "/usr/lib/extension-release.d/"), os.ModePerm)
 	if err != nil {
+		logging.LogError("Failed to create extension-release directory: %v", err)
 		return err
 	}
 
@@ -159,16 +456,17 @@ func createRootfs(image string, name string, imageSource string) error {
 	// Write the string to the file
 	err = os.WriteFile(filePath, []byte(content), 0644)
 	if err != nil {
+		logging.LogError("Failed to write extension-release file: %v", err)
 		return err
 	}
 
-	logging.Log("rootfs creation done")
+	logging.Log("Rootfs creation completed successfully")
 	return nil
 }
 
 func CreateSysext(image string, name string, fs string, imageSource string) error {
 	if fs != "squashfs" && fs != "btrfs" && fs != "ext4" {
-		return errors.New("Unsupported fs type")
+		return errors.New("unsupported fs type")
 	}
 
 	// If imageSource is empty, use the full image and skip differential processing
