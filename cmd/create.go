@@ -48,15 +48,12 @@ func create(cmd *cobra.Command, arguments []string) error {
 		return err
 	}
 
-	imageSource, err := cmd.Flags().GetString("image-source")
-	if err != nil {
-		return err
-	}
+	imageSource, _ := cmd.Flags().GetString("image-source") // Ignore error as it's optional
 
-	if image == "" || name == "" || imageSource == "" {
+	if image == "" || name == "" {
 		out, _ := exec.Command("/proc/self/exe", []string{"create", "--help"}...).CombinedOutput()
 		fmt.Println(string(out))
-		return errors.New("Missing arguments")
+		return errors.New("missing required arguments: image and name must be specified")
 	}
 
 	return sysextutils.CreateSysext(image, name, fs, imageSource)

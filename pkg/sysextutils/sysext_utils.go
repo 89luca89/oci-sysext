@@ -44,9 +44,13 @@ func cleanRootfs(image, name string) error {
 }
 
 func calcSkipLayers(image, imageSource string) (int, error) {
+	if image == imageSource || imageSource == "" {
+		// No layers to skip if there is no differential source
+		return 0, nil
+	}
+
 	logging.Log("reading %s's manifest", image)
 	imageDir := imageutils.GetPath(image)
-	// get manifest
 	manifestFile, err := fileutils.ReadFile(filepath.Join(imageDir, "manifest.json"))
 	if err != nil {
 		return 0, err
@@ -54,7 +58,6 @@ func calcSkipLayers(image, imageSource string) (int, error) {
 
 	sourceImageDir := imageutils.GetPath(imageSource)
 	logging.Log("reading %s's manifest", imageSource)
-	// get manifest
 	sourceManifestFile, err := fileutils.ReadFile(filepath.Join(sourceImageDir, "manifest.json"))
 	if err != nil {
 		return 0, err
@@ -92,7 +95,6 @@ func createRootfs(image string, name string, imageSource string) error {
 	}
 
 	sysextRootfsDIR := filepath.Join(SysextRootfsDir, getID(image))
-
 	logging.Log("creating %s", sysextRootfsDIR)
 
 	err = os.MkdirAll(sysextRootfsDIR, os.ModePerm)
@@ -101,44 +103,34 @@ func createRootfs(image string, name string, imageSource string) error {
 	}
 
 	logging.Log("looking up image %s", image)
-
 	imageDir := imageutils.GetPath(image)
-
 	logging.Log("reading %s's manifest", image)
-
-	// get manifest
 	manifestFile, err := fileutils.ReadFile(filepath.Join(imageDir, "manifest.json"))
 	if err != nil {
 		return err
 	}
 
 	var manifest v1.Manifest
-
 	err = json.Unmarshal(manifestFile, &manifest)
 	if err != nil {
 		return err
 	}
 
 	logging.Log("extracting image's layers, skipping %d layers...", skip)
-
-	if skip <= 0 || skip >= len(manifest.Layers) {
-		return errors.New("Source image is not correct")
+	if skip < 0 || skip > len(manifest.Layers) {
+		return errors.New("Invalid number of layers to skip")
 	}
 
-	for _, layer := range manifest.Layers {
-		layerDigest := strings.Split(layer.Digest.String(), ":")[1] + ".tar.gz"
-		if skip > 0 {
-			skip--
-			logging.Log("skipping layer %s", layerDigest)
+	for i, layer := range manifest.Layers {
+		if i < skip {
+			logging.Log("skipping layer %s", layer.Digest)
 			continue
 		}
 
+		layerDigest := strings.Split(layer.Digest.String(), ":")[1] + ".tar.gz"
 		logging.Log("extracting layer %s in %s", layerDigest, sysextRootfsDIR)
 
-		err = fileutils.UntarFile(
-			filepath.Join(imageDir, layerDigest),
-			sysextRootfsDIR,
-		)
+		err = fileutils.UntarFile(filepath.Join(imageDir, layerDigest), sysextRootfsDIR)
 		if err != nil {
 			return err
 		}
@@ -152,8 +144,7 @@ func createRootfs(image string, name string, imageSource string) error {
 	for _, dir := range dirs {
 		if dir.Name() != "usr" && dir.Name() != "opt" {
 			logging.Log("removing unneeded dir: %s", dir.Name())
-
-			os.RemoveAll(filepath.Join(sysextRootfsDIR, dir.Name()))
+			// os.RemoveAll(filepath.Join(sysextRootfsDIR, dir.Name()))
 		}
 	}
 
@@ -163,7 +154,6 @@ func createRootfs(image string, name string, imageSource string) error {
 	}
 
 	filePath := filepath.Join(sysextRootfsDIR, "/usr/lib/extension-release.d/", "extension-release."+name)
-
 	content := "ID=_any\nEXTENSION_RELOAD_MANAGER=1\n"
 
 	// Write the string to the file
@@ -172,14 +162,29 @@ func createRootfs(image string, name string, imageSource string) error {
 		return err
 	}
 
-	logging.Log("extracting done")
-
+	logging.Log("rootfs creation done")
 	return nil
 }
 
 func CreateSysext(image string, name string, fs string, imageSource string) error {
 	if fs != "squashfs" && fs != "btrfs" && fs != "ext4" {
 		return errors.New("Unsupported fs type")
+	}
+
+	// If imageSource is empty, use the full image and skip differential processing
+	if imageSource == "" {
+		imageSource = image // Optional: Set imageSource to image if you want to use the same image for some operations
+	}
+
+	// Ensure the image source directory only if imageSource is not the same as image
+	if imageSource != image {
+		sourceImageDir := imageutils.GetPath(imageSource)
+		if !fileutils.Exist(sourceImageDir) {
+			_, err := imageutils.Pull(imageSource, false)
+			if err != nil {
+				return err
+			}
+		}
 	}
 
 	logging.Log("cleaning up rootfs dir...")
